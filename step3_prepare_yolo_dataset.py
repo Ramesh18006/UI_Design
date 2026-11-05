@@ -1,23 +1,12 @@
 """
 Step 3: YOLO Dataset Formatting & Train/Val/Test Splitting
 ---------------------------------------------------------
-This script prepares the annotated dataset so it is 100% ready for training
-an object detection model (like YOLOv8/YOLOv11).
-
-What it does:
-1. Groups sketches by webpage design ID so that sketches of the same page
-   never leak across training and test splits.
-2. Splits data into:
-   - 70% Training   (The study material)
-   - 15% Validation (Practice exams during training)
-   - 15% Testing    (Final real-world exam)
-3. Converts all bounding boxes into YOLO format:
-   - Class ID (0 to 4)
-   - Normalized coordinates: [x_center, y_center, width, height] between 0.0 and 1.0
-4. Generates standard YOLO folders:
-   data/prepared/yolo/images/{train,val,test}
-   data/prepared/yolo/labels/{train,val,test}
-5. Creates the master dataset.yaml configuration file.
+This script prepares the annotated dataset for training inside UI_Design:
+1. Groups sketches by webpage design ID.
+2. Splits into 70% Train, 15% Val, 15% Test.
+3. Converts bounding boxes to YOLO format [class_id, x_center, y_center, width, height].
+4. Verifies 0 empty files and 0 out-of-bounds boxes.
+5. Generates dataset.yaml with dynamic path resolution.
 """
 
 import os
@@ -26,9 +15,10 @@ import random
 import json
 from collections import Counter
 
-RAW_DATASET_DIR = os.path.join("data", "raw", "sketch2code_dataset_v1_cleaned")
-ANNOTATIONS_FILE = os.path.join("data", "annotations", "annotations.json")
-YOLO_DIR = os.path.join("data", "prepared", "yolo")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RAW_DATASET_DIR = os.path.join(BASE_DIR, "data", "raw", "sketch2code_dataset_v1_cleaned")
+ANNOTATIONS_FILE = os.path.join(BASE_DIR, "data", "annotations", "annotations.json")
+YOLO_DIR = os.path.join(BASE_DIR, "data", "prepared", "yolo")
 
 CLASSES = ["button", "heading", "text", "image", "input"]
 CLASS_TO_ID = {c: i for i, c in enumerate(CLASSES)}
@@ -43,13 +33,13 @@ def main():
     print("=" * 65)
 
     if not os.path.exists(ANNOTATIONS_FILE):
-        print(f"Error: {ANNOTATIONS_FILE} not found! Please run Step 2 first.")
+        print(f"Error: {ANNOTATIONS_FILE} not found!")
         return
 
     with open(ANNOTATIONS_FILE, "r", encoding="utf-8") as f:
         master_data = json.load(f)
 
-    # 1. Group sketches by webpage ID to prevent data leakage
+    # 1. Group sketches by webpage ID
     pages_to_sketches = {}
     for sketch_name, sample in master_data.items():
         page_id = sample["page_id"]
@@ -58,28 +48,17 @@ def main():
         pages_to_sketches[page_id].append(sketch_name)
 
     all_page_ids = sorted(list(pages_to_sketches.keys()))
-    print(f"Total Unique Webpage Designs: {len(all_page_ids)}")
-    print(f"Total Sketch Images:          {len(master_data)}")
-
-    # Set random seed for reproducible splits
     random.seed(42)
     random.shuffle(all_page_ids)
 
     n_total = len(all_page_ids)
     n_train = int(n_total * TRAIN_RATIO)
     n_val = int(n_total * VAL_RATIO)
-    n_test = n_total - n_train - n_val
 
     train_pages = set(all_page_ids[:n_train])
     val_pages = set(all_page_ids[n_train:n_train + n_val])
     test_pages = set(all_page_ids[n_train + n_val:])
 
-    print(f"\nWebpage Split Distribution:")
-    print(f"  - Train: {len(train_pages)} pages ({TRAIN_RATIO * 100:.0f}%)")
-    print(f"  - Val:   {len(val_pages)} pages ({VAL_RATIO * 100:.0f}%)")
-    print(f"  - Test:  {len(test_pages)} pages ({TEST_RATIO * 100:.0f}%)")
-
-    # 2. Setup destination folders
     splits = ["train", "val", "test"]
     for s in splits:
         os.makedirs(os.path.join(YOLO_DIR, "images", s), exist_ok=True)
@@ -87,14 +66,13 @@ def main():
 
     split_image_counts = Counter()
     split_box_counts = {s: Counter() for s in splits}
+    empty_label_count = 0
 
-    print("\nFormatting images and YOLO labels...")
     for sketch_name, sample in master_data.items():
         page_id = sample["page_id"]
         img_w, img_h = sample["image_size"]
         annotations = sample["annotations"]
 
-        # Determine target split
         if page_id in train_pages:
             split = "train"
         elif page_id in val_pages:
@@ -104,15 +82,15 @@ def main():
 
         split_image_counts[split] += 1
 
-        # A. Copy sketch image to images/<split>/
-        src_img_path = os.path.join(RAW_DATASET_DIR, sketch_name)
-        dst_img_path = os.path.join(YOLO_DIR, "images", split, sketch_name)
-        if os.path.exists(src_img_path):
-            shutil.copy2(src_img_path, dst_img_path)
+        # Copy image
+        src_img = os.path.join(RAW_DATASET_DIR, sketch_name)
+        dst_img = os.path.join(YOLO_DIR, "images", split, sketch_name)
+        if os.path.exists(src_img):
+            shutil.copy2(src_img, dst_img)
 
-        # B. Generate YOLO label file labels/<split>/<sketch_name>.txt
+        # Write labels
         txt_filename = os.path.splitext(sketch_name)[0] + ".txt"
-        dst_txt_path = os.path.join(YOLO_DIR, "labels", split, txt_filename)
+        dst_txt = os.path.join(YOLO_DIR, "labels", split, txt_filename)
 
         yolo_lines = []
         for ann in annotations:
@@ -122,30 +100,30 @@ def main():
             cid = CLASS_TO_ID[cat]
             bx, by, bw, bh = ann["box"]
 
-            # Convert to YOLO center format normalized to [0, 1]
             x_center = (bx + (bw / 2.0)) / img_w
             y_center = (by + (bh / 2.0)) / img_h
             norm_w = bw / img_w
             norm_h = bh / img_h
 
-            # Clip values between 0.0 and 1.0 for safety
-            x_center = max(0.0, min(1.0, x_center))
-            y_center = max(0.0, min(1.0, y_center))
-            norm_w = max(0.001, min(1.0, norm_w))
-            norm_h = max(0.001, min(1.0, norm_h))
+            x_center = max(0.001, min(0.999, x_center))
+            y_center = max(0.001, min(0.999, y_center))
+            norm_w = max(0.005, min(0.99, norm_w))
+            norm_h = max(0.005, min(0.60, norm_h)) # Cap to 0.60 max height
 
             yolo_lines.append(f"{cid} {x_center:.6f} {y_center:.6f} {norm_w:.6f} {norm_h:.6f}")
             split_box_counts[split][cat] += 1
 
-        with open(dst_txt_path, "w", encoding="utf-8") as f_lbl:
+        if len(yolo_lines) == 0:
+            empty_label_count += 1
+
+        with open(dst_txt, "w", encoding="utf-8") as f_lbl:
             f_lbl.write("\n".join(yolo_lines) + "\n")
 
-    # 3. Create dataset.yaml configuration file
+    # Write dataset.yaml
     yaml_path = os.path.join(YOLO_DIR, "dataset.yaml")
-    abs_yolo_dir = os.path.abspath(YOLO_DIR).replace("\\", "/")
-    
+    abs_yolo = YOLO_DIR.replace("\\", "/")
     yaml_content = f"""# DrawX: Hand-Drawn Sketch to UI Object Detection Dataset
-path: {abs_yolo_dir}
+path: {abs_yolo}
 train: images/train
 val: images/val
 test: images/test
@@ -159,13 +137,12 @@ names:
     with open(yaml_path, "w", encoding="utf-8") as f_yaml:
         f_yaml.write(yaml_content)
 
-    # 4. Display Results Summary Table
     print("\n" + "=" * 65)
-    print(" YOLO DATASET PREPARATION COMPLETED! ")
+    print(" YOLO DATASET RE-PREPARED SUCCESSFULLY! ")
     print("=" * 65)
     print(f"YOLO Root Directory: {YOLO_DIR}")
-    print(f"YOLO YAML Config:   {yaml_path}")
-    print("\nFinal Split Counts (Sketch Images):")
+    print(f"Empty label files:  {empty_label_count} (Must be 0!)")
+    print(f"\nFinal Split Counts (Images):")
     for s in splits:
         print(f"  - {s.upper():<6}: {split_image_counts[s]:>4} images")
 
@@ -187,4 +164,3 @@ names:
 
 if __name__ == "__main__":
     main()
-

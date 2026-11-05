@@ -1,5 +1,5 @@
 # DrawX: Hand-Drawn Sketch to UI Object Detection Dataset
-path: C:/Users/moort/OneDrive/Desktop/HAI(DrawX)/data/prepared/yolo
+path: C:/Users/moort/OneDrive/Desktop/HAI(DrawX)/UI_Design/data/prepared/yolo
 train: images/train
 val: images/val
 test: images/test
